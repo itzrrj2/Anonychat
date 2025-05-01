@@ -1,12 +1,14 @@
 import os
 import time
 import random
+from datetime import datetime
 from dotenv import load_dotenv
 from pymongo import MongoClient
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, CallbackQuery
 from pyrogram.enums import ChatAction
 
+# Load environment variables
 load_dotenv()
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
@@ -19,6 +21,8 @@ mongo = MongoClient(MONGO_URI)
 db = mongo["anonchat"]
 users = db["users"]
 waiting = db["waiting"]
+reports = db["reports"]
+referrals = db["referrals"]
 
 def generate_nickname():
     adjectives = ["Blue", "Fast", "Silent", "Bright", "Dark", "Happy", "Lazy"]
@@ -35,9 +39,7 @@ def update_user(uid, data):
     users.update_one({"_id": uid}, {"$set": data}, upsert=True)
 
 def get_partner(uid):
-    partner = get_user(uid).get("partner")
-    print(f"[DEBUG] get_partner({uid}) -> {partner}")
-    return partner
+    return get_user(uid).get("partner")
 
 def disconnect(uid):
     partner = get_partner(uid)
@@ -46,14 +48,21 @@ def disconnect(uid):
         update_user(partner, {"partner": None})
     return partner
 
-def find_match(mode, gender, uid):
+def find_match(mode, user_gender, uid):
     waiting.delete_many({"_id": uid})
     candidates = list(waiting.find({"mode": mode}))
     for c in candidates:
-        other = get_user(c["_id"])
-        if other and other.get("partner") is None and other.get("gender") != gender:
-            waiting.delete_one({"_id": c["_id"]})
-            return c["_id"]
+        other_id = c["_id"]
+        other_user = get_user(other_id)
+        if not other_user or other_user.get("partner"): continue
+        other_gender = other_user.get("gender")
+        if (
+            mode == "random" or
+            (mode == "male" and other_gender == "male") or
+            (mode == "female" and other_gender == "female")
+        ):
+            waiting.delete_one({"_id": other_id})
+            return other_id
     waiting.update_one({"_id": uid}, {"$set": {"mode": mode}}, upsert=True)
     return None
 
@@ -61,23 +70,48 @@ def find_match(mode, gender, uid):
 async def start(client, msg):
     uid = msg.from_user.id
     if not get_user(uid).get("nickname"):
-        update_user(uid, {"nickname": generate_nickname(), "theme": "set2", "last_seen": time.time()})
+        update_user(uid, {
+            "nickname": generate_nickname(),
+            "theme": "set2",
+            "last_seen": time.time()
+        })
+
     kb = [[
         InlineKeyboardButton("♂️ Male", callback_data="gender_male"),
         InlineKeyboardButton("♀️ Female", callback_data="gender_female")
     ]]
-    await msg.reply("Select your gender:", reply_markup=InlineKeyboardMarkup(kb))
+
+    commands = """
+👋 Welcome to Anonymous Chat Bot!
+
+You can chat with strangers anonymously based on gender.
+
+Available commands:
+/start - Restart and select gender
+/status - Check your chat status
+/stop - Disconnect from current chat
+/next - Find a new partner
+/good - Give positive feedback
+/bad - Give negative feedback
+
+Admin:
+/broadcast <msg>
+/clearqueue
+/online
+"""
+    await msg.reply(commands.strip(), reply_markup=InlineKeyboardMarkup(kb))
 
 @app.on_callback_query(filters.regex("gender_"))
-async def set_gender(client, cb):
+async def gender_select(client, cb):
     gender = cb.data.split("_")[1]
-    update_user(cb.from_user.id, {"gender": gender, "partner": None})
+    uid = cb.from_user.id
+    update_user(uid, {"gender": gender, "partner": None})
     kb = [
         [InlineKeyboardButton("🔀 Chat with Stranger", callback_data="chat_random")],
         [InlineKeyboardButton("👨 Chat with Male", callback_data="chat_male")],
         [InlineKeyboardButton("👩 Chat with Female", callback_data="chat_female")]
     ]
-    await cb.message.edit("Now choose how to chat:", reply_markup=InlineKeyboardMarkup(kb))
+    await cb.message.edit(f"Gender set as {gender.capitalize()}.\nNow choose how to chat:", reply_markup=InlineKeyboardMarkup(kb))
 
 @app.on_callback_query(filters.regex("chat_"))
 async def chat_mode(client, cb):
@@ -172,15 +206,33 @@ async def broadcast(client, msg):
         except:
             continue
 
-@app.on_message(filters.private & filters.text & ~filters.command(["start", "stop", "next", "status", "good", "bad", "clearqueue", "online", "broadcast"]))
+@app.on_message(
+    filters.private & 
+    ~filters.command(["start", "stop", "next", "status", "good", "bad", "clearqueue", "online", "broadcast"])
+)
 async def relay(client, msg):
     uid = msg.from_user.id
     partner = get_partner(uid)
-    if partner:
-        update_user(uid, {"last_active": time.time()})
-        await client.send_chat_action(partner, ChatAction.TYPING)
-        await client.send_message(partner, msg.text)
-    else:
+
+    if not partner:
         await msg.reply("❗ You're not in a chat.")
+        return
+
+    update_user(uid, {"last_active": time.time()})
+
+    try:
+        await client.send_chat_action(partner, ChatAction.TYPING)
+
+        if msg.photo:
+            await client.send_photo(partner, msg.photo.file_id, caption=msg.caption or "")
+        elif msg.document and msg.document.mime_type.startswith("image/"):
+            await client.send_document(partner, msg.document.file_id, caption=msg.caption or "")
+        elif msg.text:
+            await client.send_message(partner, msg.text)
+        else:
+            await msg.reply("⚠️ Only text and image messages are supported.")
+
+    except Exception as e:
+        await msg.reply(f"⚠️ Failed to forward message: {e}")
 
 app.run()
