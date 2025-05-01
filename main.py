@@ -4,9 +4,9 @@ import random
 from dotenv import load_dotenv
 from pymongo import MongoClient
 from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, CallbackQuery
+from pyrogram.enums import ChatAction
 
-# Load env
 load_dotenv()
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
@@ -14,14 +14,12 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
-# Init
 app = Client("anon-bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 mongo = MongoClient(MONGO_URI)
 db = mongo["anonchat"]
 users = db["users"]
 waiting = db["waiting"]
 
-# Utilities
 def generate_nickname():
     adjectives = ["Blue", "Fast", "Silent", "Bright", "Dark", "Happy", "Lazy"]
     animals = ["Tiger", "Wolf", "Lion", "Fox", "Bear", "Eagle", "Otter"]
@@ -59,7 +57,6 @@ def find_match(mode, gender, uid):
     waiting.update_one({"_id": uid}, {"$set": {"mode": mode}}, upsert=True)
     return None
 
-# Handlers
 @app.on_message(filters.command("start"))
 async def start(client, msg):
     uid = msg.from_user.id
@@ -103,6 +100,12 @@ async def chat_mode(client, cb):
     else:
         await cb.message.edit("⏳ Searching for a partner...")
 
+@app.on_callback_query(filters.regex("next"))
+async def next_callback(client, cb):
+    await stop_chat(client, cb)
+    cb.data = "chat_random"
+    await chat_mode(client, cb)
+
 @app.on_message(filters.command("next"))
 async def next_cmd(client, msg):
     class DummyCB:
@@ -113,12 +116,6 @@ async def next_cmd(client, msg):
     await stop_chat(client, msg)
     await chat_mode(client, DummyCB(msg.from_user, msg))
 
-@app.on_callback_query(filters.regex("next"))
-async def next_callback(client, cb):
-    await stop_chat(client, cb)
-    cb.data = "chat_random"
-    await chat_mode(client, cb)
-
 @app.on_callback_query(filters.regex("stop"))
 @app.on_message(filters.command("stop"))
 async def stop_chat(client, event):
@@ -128,21 +125,10 @@ async def stop_chat(client, event):
         await client.send_message(partner, "⚠️ Stranger has disconnected.")
         await client.send_message(partner, "How was your chat?\n👍 /good 👎 /bad")
     msg = "❌ Disconnected. Use /start to chat again."
-    if hasattr(event, "message"):
-        await event.message.reply(msg)
-    else:
+    if isinstance(event, CallbackQuery):
         await event.answer(msg, show_alert=True)
-
-@app.on_message(filters.private & filters.text & ~filters.command(["start", "stop", "next", "status"]))
-async def relay(client, msg):
-    uid = msg.from_user.id
-    partner = get_partner(uid)
-    if partner:
-        update_user(uid, {"last_active": time.time()})
-        await client.send_chat_action(partner, "typing")
-        await client.send_message(partner, msg.text)
-    else:
-        await msg.reply("❗ You're not in a chat.")
+    elif isinstance(event, Message):
+        await event.reply(msg)
 
 @app.on_message(filters.command("status"))
 async def status(client, msg):
@@ -185,5 +171,16 @@ async def broadcast(client, msg):
             await client.send_message(u["_id"], f"📢 {text}")
         except:
             continue
+
+@app.on_message(filters.private & filters.text & ~filters.command(["start", "stop", "next", "status", "good", "bad", "clearqueue", "online", "broadcast"]))
+async def relay(client, msg):
+    uid = msg.from_user.id
+    partner = get_partner(uid)
+    if partner:
+        update_user(uid, {"last_active": time.time()})
+        await client.send_chat_action(partner, ChatAction.TYPING)
+        await client.send_message(partner, msg.text)
+    else:
+        await msg.reply("❗ You're not in a chat.")
 
 app.run()
