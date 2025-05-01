@@ -22,7 +22,7 @@ waiting = db["waiting"]
 
 # Helper Functions
 def get_user(uid):
-    return users.find_one({"_id": uid})
+    return users.find_one({"_id": uid}) or {}
 
 def update_user(uid, data):
     users.update_one({"_id": uid}, {"$set": data}, upsert=True)
@@ -40,13 +40,20 @@ def disconnect(uid):
     return partner_id
 
 def find_match(mode, gender, uid):
+    # Always clear from any waiting queues
+    waiting.delete_many({"_id": uid})
+
+    # Try to find a partner
     candidates = list(waiting.find({"mode": mode}))
     for c in candidates:
-        if c["_id"] != uid and get_user(c["_id"]).get("gender") != gender:
-            waiting.delete_one({"_id": c["_id"]})
-            return c["_id"]
+        if c["_id"] != uid:
+            other = get_user(c["_id"])
+            if other.get("gender") != gender and not other.get("partner"):
+                waiting.delete_one({"_id": c["_id"]})
+                return c["_id"]
 
-    waiting.update_one({"_id": uid}, {"$set": {"mode": mode}}, upsert=True)
+    # No match found — add user to queue
+    waiting.insert_one({"_id": uid, "mode": mode})
     return None
 
 # Start Handler
@@ -68,7 +75,7 @@ async def set_gender(client, cb):
         [InlineKeyboardButton("👨 Chat with Male", callback_data="chat_male")],
         [InlineKeyboardButton("👩 Chat with Female", callback_data="chat_female")]
     ]
-    await cb.message.edit(f"Gender set to {gender.capitalize()}.\nNow, choose a chat mode:", reply_markup=InlineKeyboardMarkup(kb))
+    await cb.message.edit_text(f"Gender set to {gender.capitalize()}.\nNow, choose a chat mode:", reply_markup=InlineKeyboardMarkup(kb))
 
 # Chat Matching
 @app.on_callback_query(filters.regex("chat_"))
@@ -82,11 +89,13 @@ async def chat_request(client, cb):
         update_user(uid, {"partner": match})
         update_user(match, {"partner": uid})
 
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("⏭️ Next", callback_data="next"), InlineKeyboardButton("⛔ Stop", callback_data="stop")]])
-        await client.send_message(uid, "✅ You're connected to a stranger!", reply_markup=kb)
-        await client.send_message(match, "✅ You're connected to a stranger!", reply_markup=kb)
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⏭️ Next", callback_data="next"), InlineKeyboardButton("⛔ Stop", callback_data="stop")]
+        ])
+        await client.send_message(uid, "✅ You're now connected to a stranger!", reply_markup=kb)
+        await client.send_message(match, "✅ You're now connected to a stranger!", reply_markup=kb)
     else:
-        await cb.message.edit("⏳ Searching for a partner... Please wait.")
+        await cb.message.edit("⏳ Searching for a partner...")
 
 # Relay Messages
 @app.on_message(filters.private & filters.text & ~filters.command(["start", "next", "stop"]))
@@ -96,7 +105,7 @@ async def message_forward(client, message):
     if partner:
         await client.send_message(partner, message.text)
     else:
-        await message.reply("❗ You're not connected. Use /start to begin.")
+        await message.reply("❗ You're not connected to anyone. Use /start to begin.")
 
 # Stop Chat
 @app.on_message(filters.command("stop"))
@@ -106,7 +115,7 @@ async def stop_chat(client, event):
     partner = disconnect(uid)
     if partner:
         await client.send_message(partner, "⚠️ Stranger has disconnected.")
-    msg = "❌ Disconnected from chat. Use /start to begin again."
+    msg = "❌ You have disconnected. Use /start to begin again."
     if hasattr(event, "message"):
         await event.message.reply(msg)
     else:
@@ -127,7 +136,9 @@ async def next_chat(client, event):
     if match:
         update_user(uid, {"partner": match})
         update_user(match, {"partner": uid})
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("⏭️ Next", callback_data="next"), InlineKeyboardButton("⛔ Stop", callback_data="stop")]])
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⏭️ Next", callback_data="next"), InlineKeyboardButton("⛔ Stop", callback_data="stop")]
+        ])
         await client.send_message(uid, "✅ Connected to a new stranger!", reply_markup=kb)
         await client.send_message(match, "✅ Connected to a new stranger!", reply_markup=kb)
     else:
@@ -137,5 +148,5 @@ async def next_chat(client, event):
         else:
             await event.answer(msg, show_alert=False)
 
-# Run Bot
+# Run the bot
 app.run()
