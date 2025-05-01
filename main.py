@@ -68,7 +68,7 @@ def find_match(mode, user_gender, uid):
     waiting.update_one({"_id": uid}, {"$set": {"mode": mode}}, upsert=True)
     return None
 
-# Start
+# Handlers
 @app.on_message(filters.command("start"))
 async def start(client, message):
     uid = message.from_user.id
@@ -79,8 +79,7 @@ async def start(client, message):
         InlineKeyboardButton("♂️ Male", callback_data="gender_male"),
         InlineKeyboardButton("♀️ Female", callback_data="gender_female")
     ]]
-    await message.reply("Welcome to Anonymous Chat Bot!
-Select your gender:", reply_markup=InlineKeyboardMarkup(kb))
+    await message.reply("Welcome to Anonymous Chat Bot!\nSelect your gender:", reply_markup=InlineKeyboardMarkup(kb))
 
 @app.on_callback_query(filters.regex("gender_"))
 async def gender_select(client, cb):
@@ -92,8 +91,7 @@ async def gender_select(client, cb):
         [InlineKeyboardButton("👨 Chat with Male", callback_data="chat_male")],
         [InlineKeyboardButton("👩 Chat with Female", callback_data="chat_female")]
     ]
-    await cb.message.edit(f"Gender set as {gender.capitalize()}.
-Now choose how to chat:", reply_markup=InlineKeyboardMarkup(kb))
+    await cb.message.edit(f"Gender set as {gender.capitalize()}.\nNow choose how to chat:", reply_markup=InlineKeyboardMarkup(kb))
 
 @app.on_callback_query(filters.regex("chat_"))
 async def chat_mode(client, cb):
@@ -101,14 +99,17 @@ async def chat_mode(client, cb):
     gender = get_user(uid).get("gender")
     mode = cb.data.split("_")[1]
     match = find_match(mode, gender, uid)
+
     if match:
         now = time.time()
         update_user(uid, {"partner": match, "last_active": now, "chat_started": now})
         update_user(match, {"partner": uid, "last_active": now, "chat_started": now})
+
         nick1 = get_user(uid).get("nickname")
         nick2 = get_user(match).get("nickname")
         theme1 = get_user(uid).get("theme", "set2")
         theme2 = get_user(match).get("theme", "set2")
+
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("⏭️ Next", callback_data="next"), InlineKeyboardButton("⛔ Stop", callback_data="stop")]])
         await client.send_photo(uid, get_avatar_url(nick2, theme2), caption=f"✅ Connected to: {nick2}", reply_markup=kb)
         await client.send_photo(match, get_avatar_url(nick1, theme1), caption=f"✅ Connected to: {nick1}", reply_markup=kb)
@@ -119,10 +120,8 @@ async def chat_mode(client, cb):
 async def status(client, message):
     uid = message.from_user.id
     u = get_user(uid)
-    txt = f"👤 Nickname: {u.get('nickname')}
-"
-    txt += f"⚙️ Gender: {u.get('gender')}
-"
+    txt = f"👤 Nickname: {u.get('nickname')}\n"
+    txt += f"⚙️ Gender: {u.get('gender')}\n"
     if u.get("partner"):
         duration = int(time.time() - u.get("chat_started", time.time()))
         mins, secs = divmod(duration, 60)
@@ -150,8 +149,7 @@ async def stop_chat(client, event):
     partner = disconnect(uid)
     if partner:
         await client.send_message(partner, "⚠️ Stranger has disconnected.")
-        await client.send_message(partner, "How was your chat?
-👍 /good 👎 /bad")
+        await client.send_message(partner, "How was your chat?\n👍 /good 👎 /bad")
     msg = "❌ Disconnected. Use /start to chat again."
     if hasattr(event, "message"):
         await event.message.reply(msg)
