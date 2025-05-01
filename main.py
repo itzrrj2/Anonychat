@@ -11,8 +11,8 @@ API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
 
-# Initialize Pyrogram bot
-app = Client("anonbot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+# Pyrogram client
+app = Client("anon-bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # MongoDB connection
 mongo = MongoClient(MONGO_URI)
@@ -20,7 +20,7 @@ db = mongo["anonchat"]
 users = db["users"]
 waiting = db["waiting"]
 
-# Utility Functions
+# Helper Functions
 def get_user(uid):
     return users.find_one({"_id": uid})
 
@@ -33,11 +33,11 @@ def get_partner(uid):
 
 def disconnect(uid):
     user = get_user(uid)
-    pid = user.get("partner")
+    partner_id = user.get("partner")
     update_user(uid, {"partner": None})
-    if pid:
-        update_user(pid, {"partner": None})
-    return pid
+    if partner_id:
+        update_user(partner_id, {"partner": None})
+    return partner_id
 
 def find_match(mode, gender, uid):
     candidates = list(waiting.find({"mode": mode}))
@@ -45,31 +45,32 @@ def find_match(mode, gender, uid):
         if c["_id"] != uid and get_user(c["_id"]).get("gender") != gender:
             waiting.delete_one({"_id": c["_id"]})
             return c["_id"]
-    waiting.insert_one({"_id": uid, "mode": mode})
+
+    waiting.update_one({"_id": uid}, {"$set": {"mode": mode}}, upsert=True)
     return None
 
-# Start
+# Start Handler
 @app.on_message(filters.command("start"))
 async def start(client, message):
-    keyboard = [
+    kb = [
         [InlineKeyboardButton("♂️ Male", callback_data="gender_male"),
          InlineKeyboardButton("♀️ Female", callback_data="gender_female")]
     ]
-    await message.reply("Welcome to Anonymous Chat!\nChoose your gender:", reply_markup=InlineKeyboardMarkup(keyboard))
+    await message.reply("Welcome to Anonymous Chat Bot!\nPlease select your gender:", reply_markup=InlineKeyboardMarkup(kb))
 
 # Gender Selection
 @app.on_callback_query(filters.regex("gender_"))
 async def set_gender(client, cb):
     gender = cb.data.split("_")[1]
     update_user(cb.from_user.id, {"gender": gender, "partner": None})
-    keyboard = [
+    kb = [
         [InlineKeyboardButton("🔀 Chat with Stranger", callback_data="chat_random")],
         [InlineKeyboardButton("👨 Chat with Male", callback_data="chat_male")],
         [InlineKeyboardButton("👩 Chat with Female", callback_data="chat_female")]
     ]
-    await cb.message.edit_text(f"Gender set to {gender.capitalize()}.\nChoose your chat option:", reply_markup=InlineKeyboardMarkup(keyboard))
+    await cb.message.edit(f"Gender set to {gender.capitalize()}.\nNow, choose a chat mode:", reply_markup=InlineKeyboardMarkup(kb))
 
-# Chat Mode Selection
+# Chat Matching
 @app.on_callback_query(filters.regex("chat_"))
 async def chat_request(client, cb):
     mode = cb.data.split("_")[1]
@@ -81,13 +82,13 @@ async def chat_request(client, cb):
         update_user(uid, {"partner": match})
         update_user(match, {"partner": uid})
 
-        buttons = InlineKeyboardMarkup([[InlineKeyboardButton("⏭️ Next", callback_data="next"), InlineKeyboardButton("⛔ Stop", callback_data="stop")]])
-        await client.send_message(uid, "✅ You are now connected to a stranger!", reply_markup=buttons)
-        await client.send_message(match, "✅ You are now connected to a stranger!", reply_markup=buttons)
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("⏭️ Next", callback_data="next"), InlineKeyboardButton("⛔ Stop", callback_data="stop")]])
+        await client.send_message(uid, "✅ You're connected to a stranger!", reply_markup=kb)
+        await client.send_message(match, "✅ You're connected to a stranger!", reply_markup=kb)
     else:
-        await cb.message.edit_text("⏳ Waiting for a match...")
+        await cb.message.edit("⏳ Searching for a partner... Please wait.")
 
-# Messaging
+# Relay Messages
 @app.on_message(filters.private & filters.text & ~filters.command(["start", "next", "stop"]))
 async def message_forward(client, message):
     uid = message.from_user.id
@@ -95,44 +96,46 @@ async def message_forward(client, message):
     if partner:
         await client.send_message(partner, message.text)
     else:
-        await message.reply("❗ You're not connected to anyone.\nUse /start to begin.")
+        await message.reply("❗ You're not connected. Use /start to begin.")
 
-# /stop or Stop button
+# Stop Chat
 @app.on_message(filters.command("stop"))
 @app.on_callback_query(filters.regex("stop"))
 async def stop_chat(client, event):
     uid = event.from_user.id if hasattr(event, "from_user") else event.message.from_user.id
     partner = disconnect(uid)
     if partner:
-        await client.send_message(partner, "⚠️ Stranger disconnected the chat.")
+        await client.send_message(partner, "⚠️ Stranger has disconnected.")
+    msg = "❌ Disconnected from chat. Use /start to begin again."
     if hasattr(event, "message"):
-        await event.message.reply("❌ You have left the chat. Use /start to find another.")
+        await event.message.reply(msg)
     else:
-        await event.answer("❌ Disconnected.", show_alert=True)
+        await event.answer(msg, show_alert=True)
 
-# /next or Next button
+# Next Chat
 @app.on_message(filters.command("next"))
 @app.on_callback_query(filters.regex("next"))
 async def next_chat(client, event):
     uid = event.from_user.id if hasattr(event, "from_user") else event.message.from_user.id
-    partner = disconnect(uid)
-    if partner:
-        await client.send_message(partner, "⚠️ Stranger left the chat.")
+    old_partner = disconnect(uid)
+    if old_partner:
+        await client.send_message(old_partner, "⚠️ Stranger left the chat.")
+
     gender = get_user(uid).get("gender")
-    mode = "random"
-    match = find_match(mode, gender, uid)
+    match = find_match("random", gender, uid)
+
     if match:
         update_user(uid, {"partner": match})
         update_user(match, {"partner": uid})
-
-        buttons = InlineKeyboardMarkup([[InlineKeyboardButton("⏭️ Next", callback_data="next"), InlineKeyboardButton("⛔ Stop", callback_data="stop")]])
-        await client.send_message(uid, "✅ Connected to a new stranger.", reply_markup=buttons)
-        await client.send_message(match, "✅ Connected to a new stranger.", reply_markup=buttons)
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("⏭️ Next", callback_data="next"), InlineKeyboardButton("⛔ Stop", callback_data="stop")]])
+        await client.send_message(uid, "✅ Connected to a new stranger!", reply_markup=kb)
+        await client.send_message(match, "✅ Connected to a new stranger!", reply_markup=kb)
     else:
+        msg = "⏳ Searching for a new partner..."
         if hasattr(event, "message"):
-            await event.message.reply("⏳ Searching for a new partner...")
+            await event.message.reply(msg)
         else:
-            await event.answer("⏳ Searching...", show_alert=False)
+            await event.answer(msg, show_alert=False)
 
-# Run the bot
+# Run Bot
 app.run()
