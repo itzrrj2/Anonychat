@@ -15,7 +15,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
-# Initialize clients
+# Initialize bot and DB
 app = Client("anon-bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 mongo = MongoClient(MONGO_URI)
 db = mongo["anonchat"]
@@ -23,13 +23,32 @@ users = db["users"]
 waiting = db["waiting"]
 config = db["config"]
 
+# Channel cache
+CHANNEL_CACHE = {"premium": [], "basic": []}
+
+def get_channels(premium=False):
+    key = "premium" if premium else "basic"
+    if not CHANNEL_CACHE[key]:
+        data = config.find_one({"_id": key}) or {}
+        CHANNEL_CACHE[key] = data.get("channels", [])
+    return CHANNEL_CACHE[key]
+
+def set_channels(channel_list, premium=False):
+    key = "premium" if premium else "basic"
+    config.update_one({"_id": key}, {"$set": {"channels": channel_list}}, upsert=True)
+    CHANNEL_CACHE[key] = channel_list
+
 def generate_nickname():
     adjectives = ["Blue", "Fast", "Silent", "Bright", "Dark", "Happy", "Lazy"]
     animals = ["Tiger", "Wolf", "Lion", "Fox", "Bear", "Eagle", "Otter"]
     return random.choice(adjectives) + random.choice(animals)
 
-def get_user(uid):
-    return users.find_one({"_id": uid}) or {}
+def get_user(uid, _cache={}):
+    if uid in _cache:
+        return _cache[uid]
+    user = users.find_one({"_id": uid}) or {}
+    _cache[uid] = user
+    return user
 
 def update_user(uid, data):
     users.update_one({"_id": uid}, {"$set": data}, upsert=True)
@@ -44,21 +63,11 @@ def disconnect(uid):
         update_user(partner, {"partner": None})
     return partner
 
-def get_channels(premium=False):
-    key = "premium" if premium else "basic"
-    data = config.find_one({"_id": key}) or {}
-    return data.get("channels", [])
-
-def set_channels(channel_list, premium=False):
-    key = "premium" if premium else "basic"
-    config.update_one({"_id": key}, {"$set": {"channels": channel_list}}, upsert=True)
-
 async def check_force_join(bot, user):
     db_user = get_user(user.id)
     premium = db_user.get("is_premium", False)
     channels = get_channels(premium)
     not_joined = []
-    
     for ch in channels:
         try:
             clean_ch = ch.lstrip('@')
@@ -68,7 +77,6 @@ async def check_force_join(bot, user):
         except Exception as e:
             print(f"Membership check error for {ch}: {str(e)}")
             not_joined.append(ch)
-    
     return not_joined
 
 @app.on_message(filters.command("start"))
@@ -106,16 +114,12 @@ async def recheck_join(client, cb):
         btns = [[InlineKeyboardButton(f"Channel #{i+1}", url=f"https://t.me/{ch.lstrip('@')}")] for i, ch in enumerate(not_joined)]
         btns.append([InlineKeyboardButton("✅ I Joined", callback_data="check_join")])
         await cb.message.reply("Please join all channels to continue:", reply_markup=InlineKeyboardMarkup(btns))
-        try:
-            await cb.message.delete()
-        except:
-            pass
+        try: await cb.message.delete()
+        except: pass
     else:
         await cb.message.reply("✅ You're verified and ready to start!")
-        try:
-            await cb.message.delete()
-        except:
-            pass
+        try: await cb.message.delete()
+        except: pass
         await start(client, cb.message)
 
 @app.on_callback_query(filters.regex("gender_"))
@@ -129,62 +133,44 @@ async def gender_select(client, cb):
         [InlineKeyboardButton("👩 Chat with Female", callback_data="chat_female")]
     ]
     await cb.message.reply(f"Gender set as {gender.capitalize()}.\nNow choose how to chat:", reply_markup=InlineKeyboardMarkup(kb))
-    try:
-        await cb.message.delete()
-    except:
-        pass
+    try: await cb.message.delete()
+    except: pass
+
+def find_match(mode, user_gender, uid):
+    waiting.delete_many({"_id": uid})
+    query = {"mode": mode}
+    if mode == "male":
+        query["gender"] = "male"
+    elif mode == "female":
+        query["gender"] = "female"
+    candidate = waiting.find_one(query)
+    if candidate:
+        waiting.delete_one({"_id": candidate["_id"]})
+        return candidate["_id"]
+    waiting.update_one({"_id": uid}, {"$set": {"mode": mode, "gender": user_gender}}, upsert=True)
+    return None
 
 @app.on_callback_query(filters.regex("chat_"))
 async def chat_mode(client, cb):
     uid = cb.from_user.id
-    gender = get_user(uid).get("gender")
+    user_data = get_user(uid)
+    gender = user_data.get("gender")
     mode = cb.data.split("_")[1]
     match = find_match(mode, gender, uid)
-
     if match:
         now = time.time()
+        partner_data = get_user(match)
         update_user(uid, {"partner": match, "last_active": now, "chat_started": now})
         update_user(match, {"partner": uid, "last_active": now, "chat_started": now})
-
-        nick1 = get_user(uid).get("nickname")
-        nick2 = get_user(match).get("nickname")
-        gender1 = get_user(uid).get("gender")
-        gender2 = get_user(match).get("gender")
-
-        img1 = "https://i.ibb.co/fVVN6f5q/file-1540.jpg" if gender2 == "female" else "https://i.ibb.co/R43jmvtr/file-1541.jpg"
-        img2 = "https://i.ibb.co/fVVN6f5q/file-1540.jpg" if gender1 == "female" else "https://i.ibb.co/R43jmvtr/file-1541.jpg"
-
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("⏭️ Next", callback_data="next"), InlineKeyboardButton("⛔ Stop", callback_data="stop")]
         ])
-
-        await client.send_photo(uid, img1, caption=f"✅ Connected to: {nick2}", reply_markup=kb)
-        await client.send_photo(match, img2, caption=f"✅ Connected to: {nick1}", reply_markup=kb)
+        await client.send_message(uid, f"✅ Connected to: {partner_data.get('nickname')}", reply_markup=kb)
+        await client.send_message(match, f"✅ Connected to: {user_data.get('nickname')}", reply_markup=kb)
     else:
         await cb.message.reply("⏳ Searching for a partner...")
-        try:
-            await cb.message.delete()
-        except:
-            pass
-
-def find_match(mode, user_gender, uid):
-    waiting.delete_many({"_id": uid})
-    candidates = list(waiting.find({"mode": mode}))
-    for c in candidates:
-        other_id = c["_id"]
-        other_user = get_user(other_id)
-        if not other_user or other_user.get("partner"):
-            continue
-        other_gender = other_user.get("gender")
-        if (
-            mode == "random" or
-            (mode == "male" and other_gender == "male") or
-            (mode == "female" and other_gender == "female")
-        ):
-            waiting.delete_one({"_id": other_id})
-            return other_id
-    waiting.update_one({"_id": uid}, {"$set": {"mode": mode}}, upsert=True)
-    return None
+        try: await cb.message.delete()
+        except: pass
 
 @app.on_callback_query(filters.regex("next"))
 async def next_callback(client, cb):
@@ -280,22 +266,16 @@ async def debug_check(client, msg):
 )
 async def relay(client, msg):
     uid = msg.from_user.id
-    partner = get_partner(uid)
+    user = get_user(uid)
+    partner = user.get("partner")
     if not partner:
         await msg.reply("❗ You're not in a chat.")
         return
     update_user(uid, {"last_active": time.time()})
     try:
         await client.send_chat_action(partner, ChatAction.TYPING)
-        if msg.photo:
-            await client.send_photo(partner, msg.photo.file_id, caption=msg.caption or "")
-        elif msg.document and msg.document.mime_type.startswith("image/"):
-            await client.send_document(partner, msg.document.file_id, caption=msg.caption or "")
-        elif msg.text:
-            await client.send_message(partner, msg.text)
-        else:
-            await msg.reply("⚠️ Only text and image messages are supported.")
+        await client.copy_message(partner, uid, msg.id)
     except Exception as e:
-        await msg.reply(f"⚠️ Failed to forward message: {str(e)}")
+        await msg.reply(f"⚠️ Failed to forward: {str(e)}")
 
 app.run()
