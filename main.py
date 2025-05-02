@@ -94,7 +94,7 @@ async def start(client, msg):
         InlineKeyboardButton("♂️ Male", callback_data="gender_male"),
         InlineKeyboardButton("♀️ Female", callback_data="gender_female")
     ]]
-    await msg.reply("👋 Welcome to Anonymous Chat Bot!\nPlease select your gender:", reply_markup=InlineKeyboardMarkup(kb))
+    await msg.reply("👋 Welcome to Anonymous Chat Bot!\n /start - Restart and select gender\n /status - Check your chat status\n /stop - Disconnect from current chat\n /next - Find a new partner\nPlease select your gender:", reply_markup=InlineKeyboardMarkup(kb))
 
 @app.on_callback_query(filters.regex("check_join"))
 async def recheck_join(client, cb):
