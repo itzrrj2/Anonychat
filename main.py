@@ -54,7 +54,8 @@ def find_match(mode, user_gender, uid):
     for c in candidates:
         other_id = c["_id"]
         other_user = get_user(other_id)
-        if not other_user or other_user.get("partner"): continue
+        if not other_user or other_user.get("partner"):
+            continue
         other_gender = other_user.get("gender")
         if (
             mode == "random" or
@@ -106,12 +107,23 @@ async def gender_select(client, cb):
     gender = cb.data.split("_")[1]
     uid = cb.from_user.id
     update_user(uid, {"gender": gender, "partner": None})
+
     kb = [
         [InlineKeyboardButton("🔀 Chat with Stranger", callback_data="chat_random")],
         [InlineKeyboardButton("👨 Chat with Male", callback_data="chat_male")],
         [InlineKeyboardButton("👩 Chat with Female", callback_data="chat_female")]
     ]
-    await cb.message.edit(f"Gender set as {gender.capitalize()}.\nNow choose how to chat:", reply_markup=InlineKeyboardMarkup(kb))
+
+    new_text = f"Gender set as {gender.capitalize()}.\nNow choose how to chat:"
+    current_text = cb.message.text or ""
+
+    try:
+        if current_text.strip() != new_text.strip():
+            await cb.message.edit_text(new_text, reply_markup=InlineKeyboardMarkup(kb))
+        else:
+            await cb.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(kb))
+    except Exception as e:
+        await cb.answer("Error updating message.", show_alert=True)
 
 @app.on_callback_query(filters.regex("chat_"))
 async def chat_mode(client, cb):
@@ -132,7 +144,7 @@ async def chat_mode(client, cb):
         await client.send_photo(uid, get_avatar_url(nick2, theme2), caption=f"✅ Connected to: {nick2}", reply_markup=kb)
         await client.send_photo(match, get_avatar_url(nick1, theme1), caption=f"✅ Connected to: {nick1}", reply_markup=kb)
     else:
-        await cb.message.edit("⏳ Searching for a partner...")
+        await cb.message.edit_text("⏳ Searching for a partner...")
 
 @app.on_callback_query(filters.regex("next"))
 async def next_callback(client, cb):
