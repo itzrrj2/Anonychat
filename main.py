@@ -7,7 +7,7 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, CallbackQuery
 from pyrogram.enums import ChatAction, ChatMemberStatus
 
-# Load env vars
+# Load environment variables
 load_dotenv()
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
@@ -15,6 +15,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
+# Initialize clients
 app = Client("anon-bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 mongo = MongoClient(MONGO_URI)
 db = mongo["anonchat"]
@@ -65,7 +66,7 @@ async def check_force_join(bot, user):
             if member.status not in (ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
                 not_joined.append(ch)
         except Exception as e:
-            print(f"Error checking membership for {ch}: {str(e)}")
+            print(f"Membership check error for {ch}: {str(e)}")
             not_joined.append(ch)
     
     return not_joined
@@ -94,7 +95,7 @@ async def start(client, msg):
         InlineKeyboardButton("♂️ Male", callback_data="gender_male"),
         InlineKeyboardButton("♀️ Female", callback_data="gender_female")
     ]]
-    await msg.reply("👋 Welcome to Anonymous Chat Bot!\n /start - Restart and select gender\n /status - Check your chat status\n /stop - Disconnect from current chat\n /next - Find a new partner\nPlease select your gender:", reply_markup=InlineKeyboardMarkup(kb))
+    await msg.reply("👋 Welcome to Anonymous Chat Bot!\nPlease select your gender:", reply_markup=InlineKeyboardMarkup(kb))
 
 @app.on_callback_query(filters.regex("check_join"))
 async def recheck_join(client, cb):
@@ -104,16 +105,17 @@ async def recheck_join(client, cb):
     if not_joined:
         btns = [[InlineKeyboardButton(f"Channel #{i+1}", url=f"https://t.me/{ch.lstrip('@')}")] for i, ch in enumerate(not_joined)]
         btns.append([InlineKeyboardButton("✅ I Joined", callback_data="check_join")])
-        try:
-            await cb.message.edit_text("Please join all channels to continue:", reply_markup=InlineKeyboardMarkup(btns))
-        except:
-            await cb.message.reply("Please join all channels to continue:", reply_markup=InlineKeyboardMarkup(btns))
-    else:
+        await cb.message.reply("Please join all channels to continue:", reply_markup=InlineKeyboardMarkup(btns))
         try:
             await cb.message.delete()
         except:
             pass
-        await client.send_message(cb.from_user.id, "✅ You're verified and ready to start!")
+    else:
+        await cb.message.reply("✅ You're verified and ready to start!")
+        try:
+            await cb.message.delete()
+        except:
+            pass
         await start(client, cb.message)
 
 @app.on_callback_query(filters.regex("gender_"))
@@ -126,7 +128,11 @@ async def gender_select(client, cb):
         [InlineKeyboardButton("👨 Chat with Male", callback_data="chat_male")],
         [InlineKeyboardButton("👩 Chat with Female", callback_data="chat_female")]
     ]
-    await cb.message.edit_text(f"Gender set as {gender.capitalize()}.\nNow choose how to chat:", reply_markup=InlineKeyboardMarkup(kb))
+    await cb.message.reply(f"Gender set as {gender.capitalize()}.\nNow choose how to chat:", reply_markup=InlineKeyboardMarkup(kb))
+    try:
+        await cb.message.delete()
+    except:
+        pass
 
 @app.on_callback_query(filters.regex("chat_"))
 async def chat_mode(client, cb):
@@ -155,7 +161,11 @@ async def chat_mode(client, cb):
         await client.send_photo(uid, img1, caption=f"✅ Connected to: {nick2}", reply_markup=kb)
         await client.send_photo(match, img2, caption=f"✅ Connected to: {nick1}", reply_markup=kb)
     else:
-        await cb.message.edit_text("⏳ Searching for a partner...")
+        await cb.message.reply("⏳ Searching for a partner...")
+        try:
+            await cb.message.delete()
+        except:
+            pass
 
 def find_match(mode, user_gender, uid):
     waiting.delete_many({"_id": uid})
