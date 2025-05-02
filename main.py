@@ -95,10 +95,7 @@ Available commands:
 /good - Give positive feedback
 /bad - Give negative feedback
 
-Admin:
-/broadcast <msg>
-/clearqueue
-/online
+Made With ❤️ By @Sr_Robots
 """
     await msg.reply(commands.strip(), reply_markup=InlineKeyboardMarkup(kb))
 
